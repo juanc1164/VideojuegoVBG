@@ -1,0 +1,963 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Corredor de Obstáculos</title>
+    
+<script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Estilos específicos para el canvas */
+        #gameCanvas {
+            border: 4px solid #333;
+            border-radius: 12px;
+            /* Deshabilita acciones táctiles predeterminadas (como el scroll) dentro del canvas */
+            touch-action: manipulation; 
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3), 0 4px 6px -2px rgba(0, 0, 0, 0.1);
+            background-color: #2563eb; /* Fondo azul oscuro, simulando una carretera o espacio */
+        }
+        /* Estilo para el spinner de carga */
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        .spinner {
+            /* Uso de tailwind classes + animación CSS nativa */
+            display: inline-block;
+            width: 3rem; 
+            height: 3rem; 
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top-color: #fff;
+            animation: spin 1s ease-in-out infinite;
+        }
+        /* Estilo para asegurar que la fuente Arial Black se vea correctamente */
+        .arial-black {
+             font-family: 'Arial Black', Gadget, sans-serif;
+        }
+
+        /* Estilo para la animación de celebración (Victory Screen) */
+        @keyframes bounce {
+            0%, 20%, 50%, 80%, 100% {transform: translateY(0);}
+            40% {transform: translateY(-5px);}
+            60% {transform: translateY(-3px);}
+        }
+        .celebration-icon {
+            animation: bounce 0.8s infinite;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen flex flex-col items-center justify-center p-4 font-sans">
+
+    
+<div id="gameContainer" class="bg-slate-700 p-6 rounded-2xl shadow-2xl">
+        
+<canvas id="gameCanvas" width="300" height="500"></canvas>
+    </div>
+
+    <script>
+        // Configuración de las variables globales del Canvas
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // --- CARGA DE IMÁGENES DE PERSONAJES Y OBSTÁCULOS (MODIFICADO) ---
+        const hombreImg = new Image();
+        hombreImg.src = 'Hombre.png'; // Archivo en la misma ubicación
+        
+        const mujerImg = new Image();
+        mujerImg.src = 'Mujer.png'; // Archivo en la misma ubicación
+        
+        // ** NUEVAS IMÁGENES DE OBSTÁCULOS **
+        const obstImages = [
+            null, // Se usa el índice 1, 2, 3, 4
+            loadImage('obst1.png'), // Más angosto
+            loadImage('obst2.png'),
+            loadImage('obst3.png'),
+            loadImage('obst4.png')  // Más grande
+        ];
+        
+        // Función auxiliar para cargar imágenes y añadir el handler de carga/error
+        function loadImage(src) {
+            const img = new Image();
+            img.src = src;
+            img.onload = imageLoaded;
+            img.onerror = () => {
+                console.error(`Error al cargar ${src}. Usando fallback.`);
+                imageLoaded();
+            };
+            return img;
+        }
+
+        // --- GESTIÓN DE CARGA DE IMÁGENES (FIX PARA EL ERROR) ---
+        let imagesLoadedCount = 0;
+        // Total de 2 personajes + 4 obstáculos = 6 imágenes a cargar
+        const totalImagesToLoad = 6; 
+
+        // Cambiamos el estado inicial a 'loading'
+        let gameState = 'loading'; 
+
+        // Función que se ejecuta cuando una imagen termina de cargar
+        function imageLoaded() {
+            imagesLoadedCount++;
+            if (imagesLoadedCount === totalImagesToLoad) {
+                // Cuando todas las imágenes han cargado, pasamos a la pantalla de selección
+                gameState = 'selection'; 
+                console.log("Todas las imágenes cargadas. Iniciando selección.");
+            }
+        }
+
+        // Asignamos los handlers de carga y error para los personajes (ya asignados en loadImage para obstáculos)
+        hombreImg.onload = imageLoaded;
+        mujerImg.onload = imageLoaded;
+        
+        hombreImg.onerror = () => { 
+            console.error("Error al cargar Hombre.png. Usando fallback."); 
+            imageLoaded();
+        };
+        mujerImg.onerror = () => { 
+            console.error("Error al cargar Mujer.png. Usando fallback."); 
+            imageLoaded();
+        };
+        // ------------------------------------------------
+
+        
+        // --- Variables de Configuración del Juego ---
+        let player = {
+            x: canvas.width / 2 - 15, // Posición central inicial
+            y: canvas.height - 70, // Posición fija cerca de la parte inferior
+            w: 30, // Ancho del cuerpo (colisión)
+            h: 50, // Alto total de la figura (colisión)
+            speedX: 3.8, // Velocidad de movimiento horizontal
+            image: null // Referencia a la imagen seleccionada (hombreImg o mujerImg)
+        };
+
+        let obstacles = [];
+        let score = 0;
+        let frame = 0;
+        let obstacleSpeed = 1.5; // Velocidad de caída de obstáculos (avance del juego)
+        let gameSpeedIncrease = 0; // Velocidad de aumento de dificultad establecida a 0 (velocidad constante)
+        
+        // Estado del personaje seleccionado: 'man' o 'woman'
+        let selectedCharacter = null; 
+        
+        // Variables para el movimiento continuo
+        let isMovingLeft = false;
+        let isMovingRight = false;
+        
+        // ** Variable: Almacena el mensaje social elegido al perder el juego. **
+        let gameOverMessage = null; 
+
+        // Constante para el espaciamiento de obstáculos
+        const OBSTACLE_GENERATION_RATE = 150; 
+
+        // Ancho de los "pasillos" laterales para las sillas (actúan como paredes)
+        const SIDE_AISLE_WIDTH = 40; 
+        // Color de las sillas
+        const CHAIR_COLOR = '#dc2626'; // Rojo (red-600)
+        // Color del interior del vagón (paredes detrás de las sillas)
+        const VAGON_COLOR = '#4b5568'; // Gris oscuro (gray-700)
+        // Color del piso/techo
+        const FLOOR_CEILING_COLOR = '#374151'; // Gris muy oscuro (gray-800)
+        // Color del pasillo central (área jugable)
+        const AISLE_COLOR = '#d1d5db'; // Gris claro (gray-300)
+
+        // Posiciones de los botones de selección
+        let selectionButtons = {
+            man: { x: 0, y: 0, w: 120, h: 50 },
+            woman: { x: 0, y: 0, w: 120, h: 50 }
+        };
+        
+        // Posiciones del botón de Reintentar (para detección de clic)
+        let retryBtn = {
+            w: 180, 
+            h: 50,  
+            x: 0, 
+            y: 0, 
+            w2: 180, // Ancho para el segundo botón
+            h2: 50,  // Alto para el segundo botón
+            x2: 0, // Posición para el segundo botón
+            y2: 0, // Posición para el segundo botón
+        };
+        
+        // --- CONFIGURACIÓN: Mensajes Sociales Aleatorios (SCORE < 20) ---
+        // Cada elemento del array contiene un sub-array de dos líneas de texto.
+        const SOCIAL_MESSAGES = [
+            // MENSAJE 1
+            [
+                'Para muchas mujeres esquivar obstáculos',
+                'en el transporte público es su día a día.'
+            ],
+            // MENSAJE 2
+            [
+                '¡La violencia en el transporte no es juego!',
+                'Ayuda a crear una "Ruta Invisible" solo aquí.'
+            ],
+            // MENSAJE 3
+            [
+                'El acoso y la discriminación afectan a miles.',
+                'Sé parte del cambio, denuncia y apoya.'
+            ]
+        ];
+        // ----------------------------------------------------------------------
+
+
+        // --- Funciones de Dibujo del Corredor (USA LA IMAGEN ASIGNADA EN player.image) ---
+        
+        // Función genérica para dibujar la imagen (o el fallback)
+        function drawPlayerImage(image, fallbackType) {
+             // Si la imagen ya cargó, se dibuja. Si no, se usa un fallback visual.
+             if (image && image.complete) {
+                ctx.drawImage(image, player.x, player.y, player.w, player.h);
+            } else {
+                // Fallback: Si no hay imagen, dibujamos la forma predeterminada
+                if (fallbackType === 'man') {
+                    // Fallback: Cuadrado azul si la imagen no está disponible
+                    ctx.fillStyle = '#3b82f6'; 
+                    ctx.fillRect(player.x, player.y, player.w, player.h);
+                } else if (fallbackType === 'woman') {
+                    // Fallback: Triángulo rosado si la imagen no está disponible
+                    ctx.fillStyle = '#ff69b4'; 
+                    ctx.beginPath();
+                    ctx.moveTo(player.x, player.y + player.h); 
+                    ctx.lineTo(player.x + player.w / 2, player.y);
+                    ctx.lineTo(player.x + player.w, player.y + player.h);
+                    ctx.closePath();
+                    ctx.fill();
+                }
+            }
+        }
+
+        function drawPlayer() {
+            // Sombra para el personaje
+            ctx.shadowColor = '#b91c1c'; // Sombra roja oscura
+            ctx.shadowBlur = 5;
+            ctx.shadowOffsetX = 2;
+            ctx.shadowOffsetY = 2;
+
+            if (selectedCharacter === 'man') {
+                drawPlayerImage(hombreImg, 'man');
+            } else if (selectedCharacter === 'woman') {
+                drawPlayerImage(mujerImg, 'woman');
+            }
+            
+            // Restablecer la sombra
+            ctx.shadowBlur = 0;
+            ctx.shadowOffsetX = 0;
+            ctx.shadowOffsetY = 0;
+        }
+        
+        // --- Resto de Funciones de Dibujo ---
+
+        // ** FUNCIÓN drawObstacles MODIFICADA PARA USAR IMÁGENES **
+        function drawObstacles() {
+            for (let i = 0; i < obstacles.length; i++) {
+                let obs = obstacles[i];
+                let obsImage = obstImages[obs.imageIndex]; // Obtener la imagen según el índice
+
+                // Dibuja la imagen del obstáculo si está cargada
+                if (obsImage && obsImage.complete) {
+                    // Dibuja la imagen para cubrir el área del obstáculo (obs.x, obs.y, obs.w, obs.h)
+                    ctx.drawImage(obsImage, obs.x, obs.y, obs.w, obs.h);
+                } else {
+                    // Fallback: Si no hay imagen, dibuja un simple rectángulo rojo
+                    ctx.fillStyle = '#ef4444'; // Rojo (red-500)
+                    ctx.fillRect(obs.x, obs.y, obs.w, obs.h);
+                    ctx.strokeStyle = 'black';
+                    ctx.strokeRect(obs.x, obs.y, obs.w, obs.h);
+                }
+            }
+        }
+        // ** FIN DE MODIFICACIÓN **
+
+        function drawScore() {
+            ctx.fillStyle = 'white';
+            ctx.strokeStyle = 'black';
+            ctx.lineWidth = 3;
+            ctx.font = 'bold 36px sans-serif';
+            ctx.textAlign = 'left';
+            
+            ctx.strokeText(score, 15, 45);
+            ctx.fillText(score, 15, 45);
+        }
+        
+        // Función de dibujo de mensajes mejorada con fuente legible (Arial Black por defecto)
+        function drawMessage(text, yOffset, fontSize = 24, fontStyle = `'Arial Black', Gadget, sans-serif`, fillStyle = 'white', strokeStyle = '#333') {
+            ctx.fillStyle = fillStyle;
+            ctx.strokeStyle = strokeStyle;
+            ctx.lineWidth = 4;
+            ctx.font = `bold ${fontSize}px ${fontStyle}`; 
+            ctx.textAlign = 'center';
+
+            ctx.strokeText(text, canvas.width / 2, canvas.height / 2 + yOffset);
+            ctx.fillText(text, canvas.width / 2, canvas.height / 2 + yOffset);
+        }
+        
+        // Función de dibujo de botones
+        function drawButton(text, x, y, w, h, bgColor, textColor, fontSize = 24) { // Fuente ajustada a 24px
+             // Dibujar el fondo del botón (con esquinas redondeadas)
+            ctx.fillStyle = bgColor;
+            const radius = 8;
+            ctx.beginPath();
+            ctx.moveTo(x + radius, y);
+            ctx.lineTo(x + w - radius, y);
+            ctx.arcTo(x + w, y, x + w, y + radius, radius);
+            ctx.lineTo(x + w, y + h - radius);
+            ctx.arcTo(x + w, y + h, x + w - radius, y + h, radius);
+            ctx.lineTo(x + radius, y + h);
+            ctx.arcTo(x, y + h, x, y + h - radius, radius);
+            ctx.lineTo(x, y + radius);
+            ctx.arcTo(x, y, x + radius, y, radius);
+            ctx.fill();
+
+            // Dibujar el texto del botón
+            ctx.fillStyle = textColor;
+            ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+            ctx.lineWidth = 1;
+            ctx.font = `bold ${fontSize}px Arial, sans-serif`;
+            ctx.textAlign = 'center';
+            const textY = y + h / 2 + fontSize / 3.5; // Ajuste para centrado vertical
+            ctx.strokeText(text, x + w / 2, textY);
+            ctx.fillText(text, x + w / 2, textY);
+        }
+        
+        // PANTALLA DE CARGA (NUEVA)
+        function drawLoadingScreen() {
+            ctx.fillStyle = VAGON_COLOR; 
+            ctx.fillRect(0, 0, canvas.width, canvas.height); 
+
+            // Spinner (usando la clase CSS definida)
+            // No podemos dibujar el elemento div/CSS directamente en canvas,
+            // pero podemos simular la animación del spinner dibujando un círculo giratorio.
+            ctx.save();
+            ctx.translate(canvas.width / 2, canvas.height / 2);
+            ctx.rotate(frame * 0.1); // Rotación basada en el frame
+            
+            ctx.beginPath();
+            ctx.arc(0, 0, 25, 0, Math.PI * 1.5, false); // Arco de 3/4 de círculo
+            ctx.lineWidth = 6;
+            ctx.strokeStyle = '#fff'; // Color de la línea principal
+            ctx.stroke();
+            
+            ctx.beginPath();
+            ctx.arc(0, 0, 25, Math.PI * 1.5, Math.PI * 2, false); // Arco del cuarto restante (más tenue)
+            ctx.lineWidth = 6;
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)'; // Color de la línea de fondo
+            ctx.stroke();
+            
+            ctx.restore();
+
+            // Mensaje
+            drawMessage('Cargando imágenes...', 50, 24, `'Arial Black', Gadget, sans-serif`, 'white', '#1f2937');
+            // Dibuja el frame para que el spinner anime
+            frame++; 
+        }
+
+        // PANTALLA DE SELECCIÓN DE PERSONAJE
+        function drawSelectionScreen() {
+            // Fondo del pasillo
+            ctx.fillStyle = AISLE_COLOR; 
+            ctx.fillRect(0, 0, canvas.width, canvas.height); 
+            
+            // --- TÍTULO "RUTA INVISIBLE" ---
+            const titleFillStyle = '#1f2937'; // Gris oscuro/negro
+            const titleStrokeStyle = 'white'; // Contorno blanco
+            const titleFont = `'Arial Black', Gadget, sans-serif`;
+            const titleSize = 42; // Tamaño grande
+
+            // 1. RUTA
+            drawMessage('RUTA', -160, titleSize, titleFont, titleFillStyle, titleStrokeStyle); 
+            // 2. INVISIBLE
+            drawMessage('INVISIBLE', -120, titleSize, titleFont, titleFillStyle, titleStrokeStyle); 
+
+
+            // 3. Mensaje de selección
+            drawMessage('Elija su personaje:', -30, 20, `'Arial Black', Gadget, sans-serif`, '#1f2937', 'white'); // Posición ajustada
+            
+            // Posiciones de los botones
+            const btnMargin = 20;
+            const totalWidth = selectionButtons.man.w * 2 + btnMargin;
+            const startX = canvas.width / 2 - totalWidth / 2;
+            const btnY = canvas.height / 2 + 50;
+            
+            // Dimensiones de la imagen de preview
+            const previewW = 30; 
+            const previewH = 50; // Usar la misma altura del personaje
+
+            // Hombre (Botón Izquierdo)
+            selectionButtons.man.x = startX;
+            selectionButtons.man.y = btnY;
+            drawButton('Hombre', selectionButtons.man.x, selectionButtons.man.y, selectionButtons.man.w, selectionButtons.man.h, '#60a5fa', '#1e40af'); // Azul
+            
+            // Mujer (Botón Derecho)
+            selectionButtons.woman.x = startX + selectionButtons.man.w + btnMargin;
+            selectionButtons.woman.y = btnY;
+            drawButton('Mujer', selectionButtons.woman.x, selectionButtons.woman.y, selectionButtons.woman.w, selectionButtons.woman.h, '#f472b6', '#9d174d'); // Rosa
+            
+            // Iconos de ejemplo de personaje debajo (USANDO IMAGENES)
+            const iconY = btnY + selectionButtons.man.h + 20;
+            
+            // 1. Imagen Hombre preview
+            if (hombreImg && hombreImg.complete) {
+                ctx.drawImage(hombreImg, selectionButtons.man.x + selectionButtons.man.w / 2 - previewW / 2, iconY, previewW, previewH);
+            } else {
+                 // Fallback si la imagen no carga
+                ctx.fillStyle = '#3b82f6'; 
+                ctx.fillRect(selectionButtons.man.x + selectionButtons.man.w / 2 - previewW / 2, iconY, previewW, previewH); 
+            }
+
+            // 2. Imagen Mujer preview
+            if (mujerImg && mujerImg.complete) {
+                ctx.drawImage(mujerImg, selectionButtons.woman.x + selectionButtons.woman.w / 2 - previewW / 2, iconY, previewW, previewH);
+            } else {
+                // Fallback si la imagen no carga
+                ctx.fillStyle = '#ff69b4'; 
+                ctx.beginPath();
+                ctx.moveTo(selectionButtons.woman.x + selectionButtons.woman.w / 2 - previewW / 2, iconY + previewH); 
+                ctx.lineTo(selectionButtons.woman.x + selectionButtons.woman.w / 2, iconY); 
+                ctx.lineTo(selectionButtons.woman.x + selectionButtons.woman.w / 2 + previewW / 2, iconY + previewH); 
+                ctx.closePath();
+                ctx.fill();
+            }
+        }
+
+        // PANTALLA DE INICIO DEL JUEGO
+        function drawStartScreen() {
+            // ... (código para dibujar la pantalla de inicio)
+            // --- TÍTULO "RUTA INVISIBLE" (IGUAL QUE SELECTION SCREEN) ---
+            const titleFillStyle = '#1f2937'; // Gris oscuro/negro
+            const titleStrokeStyle = 'white'; // Contorno blanco
+            const titleFont = `'Arial Black', Gadget, sans-serif`;
+            const titleSize = 40; // Tamaño grande
+
+            // 1. RUTA
+            drawMessage('RUTA', -160, titleSize, titleFont, titleFillStyle, titleStrokeStyle); 
+            // 2. INVISIBLE
+            drawMessage('INVISIBLE', -120, titleSize, titleFont, titleFillStyle, titleStrokeStyle); 
+            
+            // Instrucciones de inicio (manteniendo tamaño original de 24px)
+            drawMessage('Toca la pantalla', 10);
+            drawMessage('para EMPEZAR', 50);
+            
+            // Animación de inicio - El corredor sí se muestra aquí
+            player.x = SIDE_AISLE_WIDTH + (canvas.width - (SIDE_AISLE_WIDTH * 2)) / 2 - player.w / 2;
+            // Animación simple de movimiento lateral para la pantalla de inicio
+            player.x += Math.sin(Date.now() * 0.003) * 0.5; 
+            drawPlayer();
+        }
+
+
+        // --- Lógica del Juego ---
+
+        function updatePlayer() {
+            // Movimiento lateral continuo (basado en las banderas isMoving)
+            if (isMovingLeft) {
+                player.x -= player.speedX;
+            } else if (isMovingRight) {
+                player.x += player.speedX;
+            }
+
+            // Limitar al jugador dentro de los bordes del canvas
+            // Los límites ahora incluyen el ancho del "pasillo" lateral
+            player.x = Math.max(SIDE_AISLE_WIDTH, Math.min(canvas.width - player.w - SIDE_AISLE_WIDTH, player.x));
+        }
+
+        // ** FUNCIÓN generateObstacles MODIFICADA PARA ASIGNAR UN ÍNDICE DE IMAGEN **
+        function generateObstacles() {
+            // Generar un nuevo obstáculo basado en la constante de espaciamiento
+            if (frame % OBSTACLE_GENERATION_RATE === 0) {
+                // Determinar ancho y posición X aleatoria
+                // Los obstáculos solo aparecen en el "pasillo central"
+                const playableWidth = canvas.width - (SIDE_AISLE_WIDTH * 2);
+                const obsW = Math.random() * (playableWidth / 2) + 30; // Ancho entre 30 y mitad de playableWidth + 30
+                const obsH = 45; // Altura de obstáculo: 45
+                
+                // Posición X del obstáculo dentro del área jugable
+                let obsX = SIDE_AISLE_WIDTH + Math.random() * (playableWidth - obsW);
+
+                // ** Lógica para asignar el índice de imagen basado en el ancho (w) **
+                let imageIndex = 1; // Default: obst1.png (el más angosto)
+                
+                // Rangos de ancho (ajustar según sea necesario para las 4 imágenes)
+                // Usamos 4 cuartiles aproximados del rango de ancho: [30, playableWidth/2 + 30]
+                const minW = 30;
+                const maxW = playableWidth / 2 + 30; // Ancho máximo
+                const range = maxW - minW;
+                
+                if (obsW < minW + range * 0.25) {
+                    imageIndex = 1; // Obst1 (más angosto)
+                } else if (obsW < minW + range * 0.5) {
+                    imageIndex = 2; // Obst2
+                } else if (obsW < minW + range * 0.75) {
+                    imageIndex = 3; // Obst3
+                } else {
+                    imageIndex = 4; // Obst4 (más ancho)
+                }
+
+                obstacles.push({
+                    x: obsX,
+                    y: -obsH, // Empieza fuera de la pantalla (arriba)
+                    w: obsW,
+                    h: obsH,
+                    passed: false,
+                    imageIndex: imageIndex // ** NUEVO: Índice de la imagen a usar **
+                });
+            }
+        }
+        // ** FIN DE MODIFICACIÓN **
+
+        function updateObstacles() {
+            // Aumentar la dificultad y la velocidad progresivamente
+            obstacleSpeed += gameSpeedIncrease;
+
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                let obs = obstacles[i];
+                obs.y += obstacleSpeed; // Los obstáculos se mueven hacia abajo
+
+                // 1. Colisión (Cuadro delimitador AABB)
+                if (player.x < obs.x + obs.w && 
+                    player.x + player.w > obs.x &&
+                    player.y < obs.y + obs.h && 
+                    player.y + player.h > obs.y) {
+                    gameOver();
+                    return;
+                }
+
+                // 2. Puntuación: Si pasa la posición Y del jugador
+                if (obs.y > player.y + player.h && !obs.passed) {
+                    score++;
+                    obs.passed = true;
+                }
+
+                // 3. Eliminación de obstáculos: si salen por debajo de la pantalla
+                if (obs.y > canvas.height) {
+                    obstacles.splice(i, 1);
+                }
+            }
+        }
+        
+        // Manejadores para el movimiento continuo (Touch/Click)
+        function setMovement(e, isStart) {
+            // Si el juego está cargando, ignorar todos los eventos
+            if (gameState === 'loading') return;
+            
+            // Obtener la posición del toque/clic
+            const rect = canvas.getBoundingClientRect();
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            const touchX = clientX - rect.left;
+            const touchY = clientY - rect.top;
+
+            // --- MANEJO DE LA PANTALLA DE SELECCIÓN DE PERSONAJE ---
+            if (gameState === 'selection' && isStart) {
+                
+                // Botón Hombre
+                if (touchX >= selectionButtons.man.x && touchX <= selectionButtons.man.x + selectionButtons.man.w &&
+                    touchY >= selectionButtons.man.y && touchY <= selectionButtons.man.y + selectionButtons.man.h) {
+                    selectedCharacter = 'man';
+                    player.image = hombreImg; // ASIGNAR LA IMAGEN
+                    gameState = 'start'; // Cambiar a la pantalla de inicio
+                    e.preventDefault();
+                    return;
+                }
+                
+                // Botón Mujer
+                if (touchX >= selectionButtons.woman.x && touchX <= selectionButtons.woman.x + selectionButtons.woman.w &&
+                    touchY >= selectionButtons.woman.y && touchY <= selectionButtons.woman.y + selectionButtons.woman.h) {
+                    selectedCharacter = 'woman';
+                    player.image = mujerImg; // ASIGNAR LA IMAGEN
+                    gameState = 'start'; // Cambiar a la pantalla de inicio
+                    e.preventDefault();
+                    return;
+                }
+                // Si está en la pantalla de selección y no tocó un botón, no hacer nada.
+                return;
+            }
+            
+            // --- MANEJO DE LA PANTALLA DE INICIO (TOUCH PARA EMPEZAR) ---
+            if (gameState === 'start' && isStart) {
+                startGame();
+                e.preventDefault();
+                return;
+            }
+
+
+            // --- MANEJO DE LA PANTALLA DE GAME OVER ---
+            if (gameState === 'gameOver' && isStart) {
+                
+                // 1. Detección de clic en el botón REINTENTAR / JUGAR DE NUEVO (Botón superior o único)
+                retryBtn.w = 180; 
+                retryBtn.h = 50; 
+                retryBtn.x = canvas.width / 2 - retryBtn.w / 2;
+                // Si score < 20, la Y es +50. Si score >= 20, la Y es +100
+                retryBtn.y = score < 20 ? canvas.height / 2 + 50 : canvas.height / 2 + 100; 
+
+                if (touchX >= retryBtn.x && 
+                    touchX <= retryBtn.x + retryBtn.w &&
+                    touchY >= retryBtn.y &&
+                    touchY <= retryBtn.y + retryBtn.h) {
+                    
+                    if (score < 20) {
+                        // score < 20: Reiniciar juego (Reintentar)
+                        startGame();
+                    } else {
+                        // score >= 20: Volver a la pantalla de SELECCIÓN de personaje
+                        resetGame();
+                        gameState = 'selection';
+                    }
+                    e.preventDefault();
+                    return;
+                }
+                
+                // 2. Detección de clic en el botón ACCEDE A WIFI (Solo si score >= 20)
+                if (score >= 20) {
+                     retryBtn.w2 = 180;
+                     retryBtn.h2 = 50;  
+                     retryBtn.x2 = canvas.width / 2 - retryBtn.w2 / 2;
+                     retryBtn.y2 = retryBtn.y + retryBtn.h + 20; // 20px de margen
+                     
+                     if (touchX >= retryBtn.x2 && 
+                         touchX <= retryBtn.x2 + retryBtn.w2 &&
+                         touchY >= retryBtn.y2 &&
+                         touchY <= retryBtn.y2 + retryBtn.h2) {
+                         
+                         // Redireccionar a la página externa
+                         window.open('https://www.metrodebogota.gov.co/', '_blank');
+                         e.preventDefault();
+                         return;
+                     }
+                }
+                return;
+            }
+
+
+            // --- LÓGICA DE MOVIMIENTO EN ESTADO 'RUNNING' ---
+            if (gameState === 'running') {
+                // Previene acciones predeterminadas como el scroll
+                e.preventDefault(); 
+                
+                // Ajuste para el nuevo área jugable
+                const playableXStart = SIDE_AISLE_WIDTH;
+                const playableXEnd = canvas.width - SIDE_AISLE_WIDTH;
+
+                if (touchX < playableXStart + (playableXEnd - playableXStart) / 2) {
+                    // Lado izquierdo del área jugable
+                    isMovingLeft = isStart;
+                    isMovingRight = false; 
+                } else {
+                    // Lado derecho del área jugable
+                    isMovingRight = isStart;
+                    isMovingLeft = false; 
+                }
+                
+                if (!isStart) {
+                    // Si es un evento de fin (mouseup/touchend), detener todo
+                    isMovingLeft = false;
+                    isMovingRight = false;
+                }
+            }
+        }
+        
+        function handleStart(e) { setMovement(e, true); }
+        function handleMove(e) { 
+            if (gameState === 'running') { // Solo permitir movimiento si el juego está activo
+                setMovement(e, true); 
+            }
+        } 
+        function handleEnd(e) { 
+            // Esto es crucial para detener el movimiento cuando se levanta el dedo/mouse
+            isMovingLeft = false;
+            isMovingRight = false;
+            if (e.target.tagName.toLowerCase() === 'canvas') {
+                e.preventDefault();
+            }
+        }
+
+
+        function startGame() {
+            gameState = 'running';
+            // El frame se reinicia en resetGame, que se llama al entrar en 'running'
+            resetGame(); 
+        }
+
+        function gameOver() {
+            gameState = 'gameOver';
+            
+            // ** SOLUCIÓN: Seleccionar el mensaje social una ÚNICA vez al perder **
+            if (score < 20) {
+                const randomIndex = Math.floor(Math.random() * SOCIAL_MESSAGES.length);
+                gameOverMessage = SOCIAL_MESSAGES[randomIndex];
+            } else {
+                gameOverMessage = null; // No necesario si ganó
+            }
+            
+            // Asegurarse de que el movimiento se detiene al perder
+            isMovingLeft = false;
+            isMovingRight = false;
+        }
+
+        function resetGame() {
+            // Reiniciar jugador en el centro del área jugable
+            player.x = SIDE_AISLE_WIDTH + (canvas.width - (SIDE_AISLE_WIDTH * 2)) / 2 - player.w / 2;
+            obstacles = [];
+            score = 0;
+            frame = 0; // Se reinicia el contador de frames
+            obstacleSpeed = 1.5; // REINICIAR VELOCIDAD a 1.5
+            gameOverMessage = null; // Limpiar el mensaje de Game Over
+        }
+
+        // --- Bucle Principal del Juego (Fondo de Metro Mejorado) ---
+        function loop() {
+            
+            // 1. DIBUJO DEL ENTORNO (Paredes, piso, techo, pasillo)
+            
+            // Fondo principal de las paredes laterales del vagón (detrás de las sillas)
+            ctx.fillStyle = VAGON_COLOR; 
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Piso y Techo del vagón
+            const floorCeilingHeight = 30; // Altura del piso y techo
+            ctx.fillStyle = FLOOR_CEILING_COLOR;
+            ctx.fillRect(0, 0, canvas.width, floorCeilingHeight); // Techo
+            ctx.fillRect(0, canvas.height - floorCeilingHeight, canvas.width, floorCeilingHeight); // Piso
+
+            // Dibujar las "sillas" o secciones de las paredes laterales con efecto de movimiento
+            const chairHeight = 60; // Altura de cada "silla"
+            const chairGap = 20; // Espacio entre sillas
+            const totalSectionHeight = chairHeight + chairGap;
+
+            // Calcular el desplazamiento vertical para simular el movimiento
+            // Solo se mueve si el juego está activo
+            const verticalOffset = (gameState === 'running' ? frame * obstacleSpeed : 0) % totalSectionHeight; 
+
+            // Lado izquierdo (Sillas Rojas)
+            ctx.fillStyle = CHAIR_COLOR;
+            for (let i = -1; i * totalSectionHeight + verticalOffset < canvas.height; i++) {
+                const y = i * totalSectionHeight + verticalOffset;
+                ctx.fillRect(0, y, SIDE_AISLE_WIDTH, chairHeight);
+            }
+
+            // Lado derecho (Sillas Rojas)
+            ctx.fillStyle = CHAIR_COLOR;
+            for (let i = -1; i * totalSectionHeight + verticalOffset < canvas.height; i++) {
+                const y = i * totalSectionHeight + verticalOffset;
+                ctx.fillRect(canvas.width - SIDE_AISLE_WIDTH, y, SIDE_AISLE_WIDTH, chairHeight);
+            }
+
+            // Dibujar el "pasillo central" con un color diferente para destacarlo (Gris claro)
+            ctx.fillStyle = AISLE_COLOR; 
+            ctx.fillRect(SIDE_AISLE_WIDTH, floorCeilingHeight, canvas.width - (SIDE_AISLE_WIDTH * 2), canvas.height - (floorCeilingHeight * 2));
+
+
+            // 2. LÓGICA DE ESTADO Y DIBUJO ESPECÍFICO
+            switch (gameState) {
+                case 'loading':
+                    drawLoadingScreen();
+                    break;
+                    
+                case 'selection':
+                    drawSelectionScreen();
+                    // El score no se dibuja en esta pantalla
+                    break;
+                    
+                case 'start':
+                    drawStartScreen();
+                    // El score no se dibuja en esta pantalla
+                    break;
+
+                case 'running':
+                    // --- JUEGO CORRIENDO ---
+                    frame++;
+                    generateObstacles();
+                    updatePlayer();
+                    updateObstacles();
+                    
+                    // DIBUJAR DURANTE EL JUEGO ACTIVO
+                    drawObstacles();
+                    drawPlayer();
+                    drawScore();
+                    break;
+
+                case 'gameOver':
+                    // --- Pantalla de Game Over ---
+                    
+                    // Umbral de Game Over especial: score < 20
+                    if (score < 20) {
+                        
+                        // OBTENER EL MENSAJE ELEGIDO UNA SOLA VEZ AL PERDER
+                        const selectedMessage = gameOverMessage;
+                        
+                        // 1. Cara triste (emoji)
+                        ctx.fillStyle = '#fef08a'; // Amarillo claro
+                        ctx.font = 'bold 60px sans-serif';
+                        ctx.textAlign = 'center';
+                        ctx.fillText('😔', canvas.width / 2, canvas.height / 2 - 140); // Posición superior
+                        
+                        // 2. Recuadro para el mensaje principal (gris oscuro)
+                        const textRecWidth = canvas.width - 40; // Ancho ajustado
+                        const textRecHeight = 100; // Aumentado para 3 líneas
+                        const textRecX = canvas.width / 2 - textRecWidth / 2;
+                        const textRecY = canvas.height / 2 - textRecHeight / 2 - 40; // Posición ajustada
+
+                        ctx.fillStyle = 'rgba(55, 65, 81, 0.8)'; // Gris oscuro (slate-700)
+                        ctx.fillRect(textRecX, textRecY, textRecWidth, textRecHeight);
+
+                        // 3. Mensaje principal (con ajuste de tamaño por línea)
+                        const fontStyleBlack = `'Arial Black', Gadget, sans-serif`;
+                        ctx.lineWidth = 2; // Contorno más fino
+                        
+                        // Línea 1: ¡Vaya! (Tamaño 20px - Original)
+                        drawMessage('¡Vaya!', textRecY + 25 - canvas.height/2, 20, fontStyleBlack);
+                        
+                        // Línea 2: Parece que no has conseguido (Tamaño 16px - Reducido)
+                        drawMessage('Parece que no has conseguido', textRecY + 55 - canvas.height/2, 16, fontStyleBlack);
+                        
+                        // Línea 3: Superar todos los obstáculos.', textRecY + 85 - canvas.height/2, 16, fontStyleBlack);
+                        drawMessage('Superar todos los obstáculos.', textRecY + 85 - canvas.height/2, 16, fontStyleBlack);
+
+                        // 4. Botón "Reintentar" (verde claro)
+                        retryBtn.w = 180; 
+                        retryBtn.h = 50;  
+                        retryBtn.x = canvas.width / 2 - retryBtn.w / 2;
+                        retryBtn.y = canvas.height / 2 + 50; // Posición ajustada
+                        
+                        // Dibujar el botón (fondo verde claro)
+                        drawButton('Reintentar', retryBtn.x, retryBtn.y, retryBtn.w, retryBtn.h, '#a7f3d0', '#065f46', 28); 
+
+                        // 5. Recuadro de texto inferior (mensaje social)
+                        const boxHeight = 78; 
+                        const boxY = canvas.height - boxHeight - 12; // Cerca del borde inferior
+                        const padding = 10;
+                        
+                        // Dibujar el fondo del recuadro
+                        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)'; // Fondo oscuro semitransparente
+                        ctx.fillRect(padding, boxY, canvas.width - (padding * 2), boxHeight);
+
+                        // 6. Dibujar el texto del recuadro
+                        if (selectedMessage) {
+                            ctx.fillStyle = 'white';
+                            ctx.font = '14px sans-serif'; 
+                            ctx.textAlign = 'center';
+                            
+                            const centerX = canvas.width / 2;
+                            const lineHeight = 15; // Espaciado vertical entre líneas
+                            
+                            // LÍNEA 1 (Mensaje Aleatorio - Línea 1)
+                            ctx.fillText(selectedMessage[0], centerX, boxY + lineHeight * 2); 
+                            // LÍNEA 2 (Mensaje Aleatorio - Línea 2)
+                            ctx.fillText(selectedMessage[1], centerX, boxY + lineHeight * 3); 
+                            
+                            // LÍNEA 3 (Mensaje estático final - Línea 1)
+                            ctx.fillText('¡Ayúdanos a que esos obstáculos solo', centerX, boxY + lineHeight * 4.5); // Espacio extra
+                            // LÍNEA 4 (Mensaje estático final - Línea 2)
+                            ctx.fillText('estén en esta pantalla!', centerX, boxY + lineHeight * 5.5); // Espacio extra
+                        }
+
+
+                        drawScore(); // El score se dibuja en esta pantalla
+                        
+                    } else {
+                        // --- Pantalla de Victoria (Score >= 20) ---
+                        
+                        // 1. CAMBIO: Fondo Verde Oscuro
+                        ctx.fillStyle = '#16a34a'; // Tailwind green-700
+                        ctx.fillRect(0, 0, canvas.width, canvas.height);
+                        
+                        // 2. CAMBIO: Icono de Celebración con animación
+                        ctx.font = 'bold 70px sans-serif';
+                        ctx.textAlign = 'center';
+                        // Aplicamos una pequeña animación de rebote usando Math.sin(frame * 0.1)
+                        const bounceY = Math.sin(frame * 0.1) * 3; // Rebota 3px
+                        ctx.fillText('🥳', canvas.width / 2, canvas.height / 2 - 150 + bounceY); 
+
+                        // 3. CAMBIO: Mensaje de Felicidades (2 líneas)
+                        drawMessage('¡FELICIDADES!', -50, 32); // Fuente más grande para el título
+                        drawMessage('Superaste el reto', 0, 24);
+
+                        // 4. Mostrar Puntaje Obtenido
+                        drawMessage(`Puntaje: ${score}`, 50, 20);
+
+                        // 5. Botón 1: Jugar de Nuevo (Verde)
+                        retryBtn.w = 180; 
+                        retryBtn.h = 50;  
+                        retryBtn.x = canvas.width / 2 - retryBtn.w / 2;
+                        retryBtn.y = canvas.height / 2 + 100; // Posición superior
+
+                        // Fuente ajustada a 24px
+                        // ACCIÓN: Vuelve a la pantalla de SELECCIÓN
+                        drawButton('Jugar de Nuevo', retryBtn.x, retryBtn.y, retryBtn.w, retryBtn.h, '#4ade80', '#166534', 24); // Tailwind green-400 / green-800
+
+                        // 6. Botón 2: Accede a Wifi (Rojo)
+                        retryBtn.w2 = 180; 
+                        retryBtn.h2 = 50;  
+                        retryBtn.x2 = canvas.width / 2 - retryBtn.w2 / 2;
+                        retryBtn.y2 = retryBtn.y + retryBtn.h + 20; // 20px de margen entre botones
+                        
+                        // Fuente ajustada a 24px
+                        // ACCIÓN: Abre el enlace externo
+                        drawButton('Accede a Wifi', retryBtn.x2, retryBtn.y2, retryBtn.w2, retryBtn.h2, '#fca5a5', '#991b1b', 24); // Tailwind red-300 / red-800
+                        
+                        drawScore(); // El score se dibuja en esta pantalla
+                    }
+                    break;
+            }
+
+            requestAnimationFrame(loop);
+        }
+
+        // --- Eventos de Usuario (Control Continuo) ---
+        
+        // MOUSE/CLICK EVENTS (Simula touch para escritorio)
+        canvas.addEventListener('mousedown', handleStart);
+        canvas.addEventListener('mousemove', handleMove); // Permite arrastrar para mover
+        document.addEventListener('mouseup', handleEnd); // Usa document para que funcione incluso si el mouse sale del canvas
+
+        // TOUCH EVENTS (Para dispositivos móviles)
+        canvas.addEventListener('touchstart', handleStart);
+        canvas.addEventListener('touchmove', handleMove);
+        document.addEventListener('touchend', handleEnd);
+        
+        // KEYBOARD EVENTS (Control continuo con teclas)
+        document.addEventListener('keydown', (e) => {
+            // No permitir entrada de teclado si el juego no ha comenzado (loading o selection)
+            if (gameState === 'loading' || gameState === 'selection') return;
+            
+            // Permitir que el juego inicie con las flechas si está en la pantalla de inicio ('start')
+            if (gameState === 'start') {
+                if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') {
+                    startGame();
+                    return;
+                }
+            }
+            // Control de movimiento durante el juego ('running')
+            if (!document.activeElement.matches('input, button') && gameState === 'running') {
+                if (e.code === 'ArrowLeft') {
+                    isMovingLeft = true;
+                    isMovingRight = false;
+                } else if (e.code === 'ArrowRight') {
+                    isMovingRight = true;
+                    isMovingLeft = false;
+                }
+            }
+            // Reiniciar con ENTER o SPACE en Game Over
+            if (gameState === 'gameOver' && (e.code === 'Enter' || e.code === 'Space')) {
+                 if (score < 20) {
+                    startGame(); // Reintentar
+                 } else if (score >= 20) {
+                    // Si es victoria, el botón principal (Jugar de Nuevo) vuelve a selección
+                    resetGame();
+                    gameState = 'selection';
+                 }
+            }
+        });
+        
+        document.addEventListener('keyup', (e) => {
+             if (e.code === 'ArrowLeft') {
+                isMovingLeft = false;
+            } else if (e.code === 'ArrowRight') {
+                isMovingRight = false;
+            }
+        });
+
+        // Iniciar el bucle de renderizado
+        loop();
+    </script>
+</body>
+</html>
